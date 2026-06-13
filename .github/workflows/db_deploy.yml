@@ -1,0 +1,15 @@
+﻿name: DB Deploy (Supabase)
+on:
+  push:
+    paths:
+      - 'infra/sql/**'
+  workflow_dispatch: {}
+jobs:
+  db-deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo 'Deploying to Supabase...'
