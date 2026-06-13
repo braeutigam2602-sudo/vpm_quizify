@@ -1,14 +1,60 @@
-﻿name: Asset Pipeline (Themes)
+name: Asset Pipeline (Themes)
+
+# Runs qql_master_genesis.py to ingest, QA and register theme assets into Supabase.
+# Default dry_run=true is the APPLY-GATE: a real upload/insert requires you to flip it.
 on:
   workflow_dispatch:
     inputs:
       theme:
-        description: 'Theme Name'
+        description: 'Theme name'
         required: true
         default: 'jackpot_ps5'
+      dry_run:
+        description: 'Validate + QA only (no upload/insert)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asset-pipeline-${{ inputs.theme }}
+  cancel-in-progress: false
+
 jobs:
   generate-assets:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: echo 'Generating Assets...'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Install ffprobe (for video alpha/fps QA)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Guard secrets
+        run: |
+          for s in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+            val="${!s:-}"
+            if [ -z "$val" ]; then echo "::error::secret $s is not set."; exit 1; fi
+          done
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Run Genesis
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: ${{ vars.SUPABASE_BUCKET || 'assets' }}
+          LOCAL_GENERATOR_CMD: ${{ vars.LOCAL_GENERATOR_CMD }}
+          THEME: ${{ inputs.theme }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python qql_master_genesis.py --theme "$THEME"

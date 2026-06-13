@@ -1,15 +1,63 @@
-﻿name: DB Deploy (Supabase)
+name: DB Deploy (Supabase)
+
+# Applies infra/sql/*.sql to Supabase via psql over the direct Postgres connection.
+# Idempotent (schema uses IF NOT EXISTS / OR REPLACE) and TRANSACTIONAL (--single-transaction,
+# ON_ERROR_STOP=1 => any error rolls the whole file back).
 on:
   push:
-    paths:
-      - 'infra/sql/**'
-  workflow_dispatch: {}
+    branches: [main]
+    paths: ['infra/sql/**']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate only (BEGIN..ROLLBACK, no commit)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-deploy
+  cancel-in-progress: false   # never interrupt a half-applied migration
+
 jobs:
   db-deploy:
     runs-on: ubuntu-latest
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: echo 'Deploying to Supabase...'
+
+      - name: Guard secret
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "${DB_URL:-}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set (see repo Settings → Secrets)."
+            exit 1
+          fi
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Apply SQL
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PGSSLMODE: require
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(infra/sql/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then echo "::warning::no SQL files found"; exit 0; fi
+          for f in $(printf '%s\n' "${files[@]}" | sort); do
+            echo "=================  $f  ================="
+            if [ "${DRY:-false}" = "true" ]; then
+              # dry-run: wrap in an explicit transaction we always roll back
+              { echo 'BEGIN;'; cat "$f"; echo 'ROLLBACK;'; } \
+                | psql "$DB_URL" -v ON_ERROR_STOP=1 --echo-errors
+            else
+              psql "$DB_URL" --single-transaction -v ON_ERROR_STOP=1 -f "$f"
+            fi
+          done
+          echo "✅ schema applied (${DRY:+DRY-RUN }idempotent)"
