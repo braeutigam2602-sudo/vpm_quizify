@@ -1,0 +1,90 @@
+# QQL Cue Service — Docker Swarm stack (docker stack deploy -c deploy/cue_stack.yml qql)
+# Redis Sentinel (1 master + 2 replicas + 3 sentinels) for failover, behind the cue_service replicas.
+# Secrets are EXTERNAL (create on a manager node, never in git):
+#   printf '%s' 'KEY1,KEY2' | docker secret create api_keys -
+#   printf '%s' 'super-secret' | docker secret create ws_token_secret -
+#   printf '%s' 'redispw'      | docker secret create redis_password -
+# Deploy env (interpolated below): REGISTRY, TAG
+version: "3.8"
+
+networks:
+  qql_game:    { driver: overlay }     # viewer/WS + event fan-out (data plane)
+  qql_control: { driver: overlay }     # redis sentinel/replication (control plane) — traffic separation
+
+secrets:
+  api_keys:        { external: true }
+  ws_token_secret: { external: true }
+  redis_password:  { external: true }
+
+services:
+  cue_service:
+    image: ${REGISTRY:-YOUR_REGISTRY}/qql-cue:${TAG:-latest}
+    networks: [qql_game, qql_control]
+    ports:
+      - { target: 8080, published: 8080, protocol: tcp, mode: ingress }
+    secrets: [api_keys, ws_token_secret, redis_password]
+    environment:
+      REDIS_SENTINELS: "redis-sentinel:26379"
+      REDIS_MASTER_NAME: "qql-master"
+      API_KEY_HEADER_NAME: "X-API-Key"
+      WS_REQUIRE_TOKEN: "false"
+      PLC_SAFETY_MARGIN_MS: "200"
+      PLC_AB_SPLIT: "0.0"
+      # secrets resolved from /run/secrets/{api_keys,ws_token_secret,redis_password} by the app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      replicas: 4
+      update_config:   { parallelism: 1, delay: 10s, order: start-first, failure_action: rollback, monitor: 30s }
+      rollback_config: { parallelism: 1, order: stop-first }
+      restart_policy:  { condition: any, delay: 5s }
+      resources:
+        limits:       { cpus: "1.0", memory: 512M }
+        reservations: { cpus: "0.25", memory: 128M }
+      placement:
+        constraints: ["node.role==worker"]
+
+  redis-master:
+    image: bitnami/redis:7.4
+    networks: [qql_control]
+    secrets: [redis_password]
+    environment:
+      REDIS_REPLICATION_MODE: master
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+    deploy:
+      replicas: 1
+      placement: { constraints: ["node.labels.redis==master"] }   # pin master to a labeled node
+      resources: { limits: { cpus: "1.0", memory: 768M } }
+
+  redis-replica:
+    image: bitnami/redis:7.4
+    networks: [qql_control]
+    secrets: [redis_password]
+    environment:
+      REDIS_REPLICATION_MODE: replica
+      REDIS_MASTER_HOST: redis-master
+      REDIS_MASTER_PASSWORD_FILE: /run/secrets/redis_password
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+    deploy:
+      replicas: 2
+      resources: { limits: { cpus: "0.5", memory: 512M } }
+
+  redis-sentinel:
+    image: bitnami/redis-sentinel:7.4
+    networks: [qql_control]
+    secrets: [redis_password]
+    environment:
+      REDIS_MASTER_HOST: redis-master
+      REDIS_MASTER_PORT: "6379"
+      REDIS_MASTER_SET: qql-master
+      REDIS_SENTINEL_QUORUM: "2"
+      REDIS_MASTER_PASSWORD_FILE: /run/secrets/redis_password
+      REDIS_SENTINEL_PASSWORD_FILE: /run/secrets/redis_password
+    deploy:
+      replicas: 3
+      endpoint_mode: dnsrr        # so the app can reach individual sentinels for discovery
+      resources: { limits: { cpus: "0.25", memory: 128M } }

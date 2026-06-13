@@ -1,0 +1,115 @@
+name: Cue Service · Build & Deploy
+
+# Builds the cue_service image, pushes to the registry, then deploys the Swarm stack
+# over SSH to a Hetzner manager node. The 'production' environment gate = APPLY-GATE
+# (configure required reviewers in repo Settings → Environments → production).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (default: commit SHA)'
+        required: false
+        default: ''
+  push:
+    branches: [main]
+    paths:
+      - 'services/cue_service/**'
+      - 'deploy/cue_stack.yml'
+      - '.github/workflows/cue.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cue-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard registry secrets
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY: ${{ vars.REGISTRY }}
+        run: |
+          for v in REGISTRY REGISTRY_USER REGISTRY_TOKEN; do
+            if [ -z "${!v:-}" ]; then echo "::error::$v not set (Settings → Secrets/Variables)"; exit 1; fi
+          done
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_SHA::12}"
+          echo "image=${{ vars.REGISTRY }}/qql-cue:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: services/cue_service
+          file: services/cue_service/Dockerfile.cue_service
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production          # manual-approval apply-gate
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard deploy secrets
+        env:
+          SWARM_SSH_KEY: ${{ secrets.SWARM_SSH_KEY }}
+          SWARM_SSH_HOST: ${{ vars.SWARM_SSH_HOST }}
+          SWARM_SSH_USER: ${{ vars.SWARM_SSH_USER }}
+        run: |
+          for v in SWARM_SSH_KEY SWARM_SSH_HOST SWARM_SSH_USER; do
+            if [ -z "${!v:-}" ]; then echo "::error::$v not set"; exit 1; fi
+          done
+
+      - name: Setup SSH to Swarm manager
+        env:
+          SWARM_SSH_KEY: ${{ secrets.SWARM_SSH_KEY }}
+          SWARM_SSH_HOST: ${{ vars.SWARM_SSH_HOST }}
+          SWARM_SSH_USER: ${{ vars.SWARM_SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SWARM_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SWARM_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # Host alias so `docker -H ssh://swarm-manager` actually uses our key (non-default name)
+          {
+            echo "Host swarm-manager"
+            echo "  HostName $SWARM_SSH_HOST"
+            echo "  User $SWARM_SSH_USER"
+            echo "  IdentityFile ~/.ssh/id_deploy"
+            echo "  IdentitiesOnly yes"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Deploy stack (docker stack deploy over SSH)
+        env:
+          DOCKER_HOST: ssh://swarm-manager
+          REGISTRY: ${{ vars.REGISTRY }}
+        run: |
+          export TAG="${{ github.event.inputs.tag }}"; [ -z "$TAG" ] && export TAG="${GITHUB_SHA::12}"
+          docker stack deploy --with-registry-auth -c deploy/cue_stack.yml qql
+          echo "✅ deployed qql/cue_service @ ${REGISTRY}/qql-cue:${TAG}"
