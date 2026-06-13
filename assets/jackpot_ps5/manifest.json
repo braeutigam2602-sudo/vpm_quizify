@@ -1,0 +1,41 @@
+{
+  "theme": "jackpot_ps5",
+  "_comment": "Asset manifest for qql_master_genesis.py. 'expect' drives QA. 'file' is relative to assets/<theme>/. layer maps to OBS compositing layers (0=studio plate, 1=grid/HUD, 2=host, 3/3.5=FX/stinger, 4=chrome). Stinger entries add 'audio_cue_ref' (Opus codec @48kHz cue file under assets/<theme>/audio/) + 'expect.audio'. NB: 'Opus' = the audio codec, not the Claude model name.",
+  "assets": [
+    {
+      "file": "studio_plate_8k.png",
+      "layer": "0", "variant": "default", "version": 1,
+      "mime": "image/png",
+      "expect": { "width": 7680, "height": 4320, "alpha": false }
+    },
+    {
+      "file": "studio_plate_loop.webm",
+      "layer": "0", "variant": "motion", "version": 1,
+      "mime": "video/webm",
+      "expect": { "width": 3840, "height": 2160, "fps": 24, "alpha": false }
+    },
+    {
+      "file": "hud_overlay_alpha.webm",
+      "layer": "1", "variant": "hud", "version": 1,
+      "mime": "video/webm",
+      "expect": { "width": 3840, "height": 2160, "fps": 30, "alpha": true }
+    },
+    {
+      "file": "grid_overlay_alpha.webm",
+      "layer": "1", "variant": "grid", "version": 1,
+      "mime": "video/webm",
+      "expect": { "width": 3840, "height": 2160, "fps": 30, "alpha": true }
+    },
+    {
+      "file": "jackpot_stinger.webm",
+      "type": "stinger",
+      "layer": "3.5", "variant": "jackpot", "version": 1,
+      "mime": "video/webm",
+      "audio_cue_ref": "audio/jackpot_stinger.opus",
+      "expect": {
+        "width": 1920, "height": 1080, "fps": 30, "alpha": true,
+        "audio": { "codec": "opus", "sample_rate": 48000, "channels": [1, 2], "min_bitrate_kbps": 96 }
+      }
+    }
+  ]
+}

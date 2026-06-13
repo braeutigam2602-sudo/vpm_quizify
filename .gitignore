@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# secrets — never commit
+.env
+.env.*
+
+# large binary assets live in Supabase Storage, not in git (manifest.json IS tracked)
+assets/**/*.png
+assets/**/*.jpg
+assets/**/*.jpeg
+assets/**/*.webm
+assets/**/*.mp4
+assets/**/*.mov
+!assets/**/manifest.json
