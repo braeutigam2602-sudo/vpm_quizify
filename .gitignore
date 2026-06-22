@@ -15,3 +15,7 @@ assets/**/*.webm
 assets/**/*.mp4
 assets/**/*.mov
 !assets/**/manifest.json
+
+# cue_service Runtime (nie committen)
+services/cue_service/*.log
+services/cue_service/__pycache__/

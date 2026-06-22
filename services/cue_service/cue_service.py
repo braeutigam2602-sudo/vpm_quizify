@@ -36,7 +36,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import (Depends, FastAPI, Header, HTTPException, Request, WebSocket,
                      WebSocketDisconnect, status)
@@ -157,9 +157,17 @@ if _HAS_PROM:
 # =============================================================================
 # DATA MODELS
 # =============================================================================
+# Allowed cue types. A module-level Literal — NOT a leading-underscore class attribute,
+# which Pydantic v2 turns into a ModelPrivateAttr (non-iterable in validators → HTTP 500).
+# As a typed field this also auto-generates the OpenAPI enum under /docs.
+CueType = Literal[
+    "action", "elimination", "ad_break", "jackpot_event", "vip_join", "reset", "lobby",
+]
+
+
 class CueIn(BaseModel):
     """Inbound cue from regie / Twitch-extension / game engine."""
-    type: str = Field(..., description="action|elimination|ad_break|jackpot_event|vip_join|reset|lobby")
+    type: CueType = Field(..., description="action|elimination|ad_break|jackpot_event|vip_join|reset|lobby")
     eliminated: Optional[list[int]] = None
     name: Optional[str] = None
     audio_cue_id: Optional[str] = None                 # maps to a haptic profile
@@ -167,15 +175,11 @@ class CueIn(BaseModel):
     idempotency_key: Optional[str] = None
     plc_group: Optional[str] = None                    # force a group (else auto A/B)
 
-    _ALLOWED = {"action", "elimination", "ad_break", "jackpot_event", "vip_join", "reset", "lobby"}
-
-    @field_validator("type")
+    @field_validator("type", mode="before")
     @classmethod
-    def _ty(cls, v: str) -> str:
-        v = (v or "").lower().strip()
-        if v not in cls._ALLOWED:
-            raise ValueError(f"type must be one of {sorted(cls._ALLOWED)}")
-        return v
+    def _normalize_type(cls, v):
+        # normalize case/whitespace BEFORE the Literal check, so "Action " == "action"
+        return v.lower().strip() if isinstance(v, str) else v
 
     @field_validator("eliminated")
     @classmethod
@@ -638,4 +642,7 @@ async def metrics():
 
 if __name__ == "__main__":   # pragma: no cover
     import uvicorn
-    uvicorn.run("cue_service:app", host="0.0.0.0", port=int(_env("PORT", "8080")), log_level="info")
+    # Pass the app OBJECT (not the "cue_service:app" import string): an import string makes
+    # uvicorn re-import this module as `cue_service` while it's already loaded as `__main__`,
+    # registering the module-level Prometheus Counters twice -> CollectorRegistry ValueError.
+    uvicorn.run(app, host="0.0.0.0", port=int(_env("PORT", "8080")), log_level="info")
